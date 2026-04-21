@@ -40,6 +40,7 @@ xoption(QJS_ENABLE_ASAN "Enable AddressSanitizer (ASan)" OFF)
 xoption(QJS_ENABLE_MSAN "Enable MemorySanitizer (MSan)" OFF)
 xoption(QJS_ENABLE_TSAN "Enable ThreadSanitizer (TSan)" OFF)
 xoption(QJS_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan)" OFF)
+xoption(QJS_ENABLE_DUMPS "Enable Leak Dumps" OFF)
 
 # Used to properly define JS_LIBC_EXTERN.
 add_compile_definitions(QUICKJS_NG_BUILD)
