@@ -72,7 +72,9 @@
 // atomic_store etc. are completely busted in recent versions of tcc;
 // somehow the compiler forgets to load |ptr| into %rdi when calling
 // the __atomic_*() helpers in its lib/stdatomic.c and lib/atomic.S
-#if !defined(__TINYC__) && !defined(EMSCRIPTEN) && !defined(__wasi__) && !__STDC_NO_ATOMICS__ && !defined(__DJGPP)
+#if !defined(__TINYC__) && !defined(EMSCRIPTEN) && \
+    (!defined(__wasi__) || defined(__wasm_atomics__)) && \
+    !__STDC_NO_ATOMICS__ && !defined(__DJGPP)
 #include "quickjs-c-atomics.h"
 #define CONFIG_ATOMICS
 #endif
@@ -52703,6 +52705,42 @@ typedef struct JSPromiseReactionData {
     JSValue handler;
 } JSPromiseReactionData;
 
+static JSValueConst js_promise_function_promise(JSValueConst func)
+{
+    JSObject *p;
+    JSPromiseFunctionData *s;
+
+    if (!JS_IsObject(func))
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_PROMISE_RESOLVE_FUNCTION &&
+        p->class_id != JS_CLASS_PROMISE_REJECT_FUNCTION)
+        return JS_UNDEFINED;
+    s = p->u.promise_function_data;
+    return s ? s->promise : JS_UNDEFINED;
+}
+
+static JSValueConst js_promise_reaction_promise(JSValueConst func)
+{
+    JSObject *p;
+    JSAsyncFunctionData *s;
+    JSValueConst promise;
+
+    promise = js_promise_function_promise(func);
+    if (!JS_IsUndefined(promise))
+        return promise;
+    if (!JS_IsObject(func))
+        return JS_UNDEFINED;
+    p = JS_VALUE_GET_OBJ(func);
+    if (p->class_id != JS_CLASS_ASYNC_FUNCTION_RESOLVE &&
+        p->class_id != JS_CLASS_ASYNC_FUNCTION_REJECT)
+        return JS_UNDEFINED;
+    s = p->u.async_function_data;
+    if (!s)
+        return JS_UNDEFINED;
+    return js_promise_function_promise(s->resolving_funcs[0]);
+}
+
 JSPromiseStateEnum JS_PromiseState(JSContext *ctx, JSValueConst promise)
 {
     JSPromiseData *s = JS_GetOpaque(promise, JS_CLASS_PROMISE);
@@ -52759,15 +52797,26 @@ static JSValue promise_reaction_job(JSContext *ctx, int argc,
     JSValueConst handler, func;
     JSValue res, res2;
     JSValueConst arg;
+    JSValueConst hook_promise;
+    JSRuntime *rt;
     bool is_reject;
 
     assert(argc == 5);
     handler = argv[2];
     is_reject = JS_ToBool(ctx, argv[3]);
     arg = argv[4];
+    rt = ctx->rt;
+    hook_promise = JS_UNDEFINED;
 
     promise_trace(ctx, "promise_reaction_job: is_reject=%d\n", is_reject);
 
+    if (rt->promise_hook) {
+        hook_promise = js_promise_reaction_promise(argv[0]);
+        if (JS_IsUndefined(hook_promise))
+            hook_promise = js_promise_reaction_promise(argv[1]);
+        rt->promise_hook(ctx, JS_PROMISE_HOOK_BEFORE, hook_promise,
+                         JS_UNDEFINED, rt->promise_hook_opaque);
+    }
     if (JS_IsUndefined(handler)) {
         if (is_reject) {
             res = JS_Throw(ctx, js_dup(arg));
@@ -52776,6 +52825,10 @@ static JSValue promise_reaction_job(JSContext *ctx, int argc,
         }
     } else {
         res = JS_Call(ctx, handler, JS_UNDEFINED, 1, &arg);
+    }
+    if (rt->promise_hook) {
+        rt->promise_hook(ctx, JS_PROMISE_HOOK_AFTER, hook_promise,
+                         JS_UNDEFINED, rt->promise_hook_opaque);
     }
     is_reject = JS_IsException(res);
     if (is_reject) {
