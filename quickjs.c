@@ -7774,7 +7774,15 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
     i = 0;
 
     if (!JS_IsNull(ctx->error_ctor)) {
-        prepare = js_dup(ctx->error_prepare_stack);
+        prepare = JS_GetPropertyStr(ctx, ctx->error_ctor, "prepareStackTrace");
+        if (JS_IsException(prepare)) {
+            JS_FreeValue(ctx, JS_GetException(ctx));
+            prepare = JS_UNDEFINED;
+        }
+        if (!JS_IsFunction(ctx, prepare)) {
+            JS_FreeValue(ctx, prepare);
+            prepare = js_dup(ctx->error_prepare_stack);
+        }
         has_prepare = JS_IsFunction(ctx, prepare);
     }
 
@@ -60584,13 +60592,105 @@ static JSValue js_callsite_getnumber(JSContext *ctx, JSValueConst this_val, int 
     return js_int32(*field);
 }
 
+static JSValue js_callsite_getnull(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSCallSiteData *csd = JS_GetOpaque2(ctx, this_val, JS_CLASS_CALL_SITE);
+    if (!csd)
+        return JS_EXCEPTION;
+    return JS_NULL;
+}
+
+static JSValue js_callsite_getundefined(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSCallSiteData *csd = JS_GetOpaque2(ctx, this_val, JS_CLASS_CALL_SITE);
+    if (!csd)
+        return JS_EXCEPTION;
+    return JS_UNDEFINED;
+}
+
+static JSValue js_callsite_false(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSCallSiteData *csd = JS_GetOpaque2(ctx, this_val, JS_CLASS_CALL_SITE);
+    if (!csd)
+        return JS_EXCEPTION;
+    return JS_FALSE;
+}
+
+static JSValue js_callsite_getpromisenull(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSCallSiteData *csd = JS_GetOpaque2(ctx, this_val, JS_CLASS_CALL_SITE);
+    if (!csd)
+        return JS_EXCEPTION;
+    return JS_NULL;
+}
+
+static JSValue js_callsite_tostring(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSCallSiteData *csd = JS_GetOpaque2(ctx, this_val, JS_CLASS_CALL_SITE);
+    if (!csd)
+        return JS_EXCEPTION;
+
+    DynBuf dbuf;
+    const char *func_name = NULL;
+    const char *filename = NULL;
+
+    js_dbuf_init(ctx, &dbuf);
+    if (!JS_IsNull(csd->func_name) && !JS_IsUndefined(csd->func_name))
+        func_name = JS_ToCString(ctx, csd->func_name);
+    if (!JS_IsNull(csd->filename) && !JS_IsUndefined(csd->filename))
+        filename = JS_ToCString(ctx, csd->filename);
+
+    if (func_name && func_name[0] != '\0')
+        dbuf_putstr(&dbuf, func_name);
+
+    if (csd->native) {
+        if (dbuf.size != 0)
+            dbuf_putstr(&dbuf, " (native)");
+        else
+            dbuf_putstr(&dbuf, "native");
+    } else {
+        if (filename && filename[0] != '\0') {
+            if (dbuf.size != 0)
+                dbuf_putstr(&dbuf, " (");
+            dbuf_putstr(&dbuf, filename);
+            if (csd->line_num != -1)
+                dbuf_printf(&dbuf, ":%d:%d", csd->line_num, csd->col_num);
+            if (func_name && func_name[0] != '\0')
+                dbuf_putc(&dbuf, ')');
+        } else if (dbuf.size == 0) {
+            dbuf_putstr(&dbuf, "<anonymous>");
+        }
+    }
+
+    if (func_name)
+        JS_FreeCString(ctx, func_name);
+    if (filename)
+        JS_FreeCString(ctx, filename);
+
+    JSValue ret = dbuf_error(&dbuf) ? JS_EXCEPTION : JS_NewStringLen(ctx, (char *)dbuf.buf, dbuf.size);
+    dbuf_free(&dbuf);
+    return ret;
+}
+
 static const JSCFunctionListEntry js_callsite_proto_funcs[] = {
     JS_CFUNC_DEF("isNative", 0, js_callsite_isnative),
+    JS_CFUNC_DEF("isEval", 0, js_callsite_false),
+    JS_CFUNC_DEF("isConstructor", 0, js_callsite_false),
+    JS_CFUNC_DEF("isToplevel", 0, js_callsite_false),
+    JS_CFUNC_DEF("isAsync", 0, js_callsite_false),
+    JS_CFUNC_DEF("isPromiseAll", 0, js_callsite_false),
     JS_CFUNC_MAGIC_DEF("getFileName", 0, js_callsite_getfield, offsetof(JSCallSiteData, filename)),
     JS_CFUNC_MAGIC_DEF("getFunction", 0, js_callsite_getfield, offsetof(JSCallSiteData, func)),
     JS_CFUNC_MAGIC_DEF("getFunctionName", 0, js_callsite_getfield, offsetof(JSCallSiteData, func_name)),
+    JS_CFUNC_DEF("getMethodName", 0, js_callsite_getnull),
+    JS_CFUNC_DEF("getTypeName", 0, js_callsite_getnull),
+    JS_CFUNC_DEF("getThis", 0, js_callsite_getundefined),
+    JS_CFUNC_DEF("getEvalOrigin", 0, js_callsite_getundefined),
+    JS_CFUNC_MAGIC_DEF("getScriptNameOrSourceURL", 0, js_callsite_getfield, offsetof(JSCallSiteData, filename)),
+    JS_CFUNC_DEF("getPromiseIndex", 0, js_callsite_getpromisenull),
     JS_CFUNC_MAGIC_DEF("getColumnNumber", 0, js_callsite_getnumber, offsetof(JSCallSiteData, col_num)),
     JS_CFUNC_MAGIC_DEF("getLineNumber", 0, js_callsite_getnumber, offsetof(JSCallSiteData, line_num)),
+    JS_CFUNC_DEF("toString", 0, js_callsite_tostring),
     JS_PROP_STRING_DEF("[Symbol.toStringTag]", "CallSite", JS_PROP_CONFIGURABLE ),
 };
 
